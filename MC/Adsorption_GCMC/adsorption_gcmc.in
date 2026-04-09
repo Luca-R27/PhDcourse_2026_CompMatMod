@@ -1,0 +1,163 @@
+# =============================================================================
+# TUTORIAL: Gas Adsorption on a Solid Surface via GCMC
+# =============================================================================
+#
+# SYSTEM:
+#   Type 1: FCC slab of LJ solid atoms, FROZEN (rigid substrate)
+#   Type 2: LJ gas atoms, inserted/deleted by GCMC in vacuum above slab
+#
+# KEY PARAMETER: pair_coeff 1 2 epsilon_12
+#   epsilon_12 = 1.5  -> strong attraction  -> clear adsorption layer forms
+#   epsilon_12 = 0.5  -> weak attraction    -> gas distributes uniformly
+#
+# Slab is frozen because:
+#   - LJ melting point is ~T=0.85; at T=1.0 the slab liquefies
+#   - Strong epsilon_12 pulls surface atoms out of lattice even below T_melt
+#   - Frozen substrate is standard in adsorption simulations (zeolites, MOFs)
+#
+# UNITS: lj (all quantities dimensionless)
+# =============================================================================
+
+variable  MU    index  -2.0
+variable  TEMP  index   1.0
+
+# --- INITIALIZATION ----------------------------------------------------------
+
+units         lj
+atom_style    atomic
+boundary      p p p
+
+# Box dimensions must be exact integer multiples of the lattice constant
+# to avoid atom overlaps on initialization.
+# FCC lattice constant in LJ units: a = sqrt(2) * 2^(1/6) = 1.5874
+# Using 6x6 unit cells in xy, Lz=40 for plenty of vacuum.
+
+lattice  fcc 1.0
+#variable  a     equal  1.5874
+variable  L   equal  6
+variable  H    equal  18 
+variable  h_slab  equal  3
+
+region    simbox  block  0 ${L}  0 ${L}  0 ${H} units lattice
+create_box  2 simbox
+
+mass  1  1.0
+mass  2  1.0
+
+# --- BUILD FCC SLAB ----------------------------------------------------------
+# 3 unit cells in z = ~12 FCC layers, ~432 atoms, density = 1.0
+
+
+# Use 'units lattice' so LAMMPS counts exact unit cells, not box coordinates.
+# 'block 0 6 0 6 0 3 units lattice' = exactly 6x6x3 FCC unit cells = 432 atoms
+# at the correct equilibrium density of 1.0.
+
+region  slab_region  block  0 ${L}  0 ${L}  0 ${h_slab} units lattice
+create_atoms  1 region slab_region
+
+region  vacuum  block  0 ${L}  0 ${L}  $(v_h_slab+.01) $(v_H-.01)  units lattice
+#write_data initial
+
+# The slab top in box coordinates: FCC conventional cell height = a
+# so 3 unit cells in z = 3*a in box units
+
+# --- POTENTIAL ---------------------------------------------------------------
+
+pair_style  lj/cut  2.5
+pair_coeff  1 1  1.0  1.0   # solid-solid: standard LJ
+pair_coeff  2 2  0.5  1.0   # gas-gas: weak self-interaction
+pair_coeff  1 2  2.  1.0   # solid-gas: strong enough to form layer
+                             # but not so strong it would rip the surface
+                             # (Lorentz-Berthelot mixing would give 0.707)
+                             # Change to 0.5 to suppress adsorption entirely
+
+pair_modify  tail  no
+
+# --- NEIGHBOR LIST -----------------------------------------------------------
+
+neighbor      0.3  bin
+neigh_modify  delay 0  every 1
+
+# --- GROUPS ------------------------------------------------------------------
+
+group  solid  type 1
+group  gas    type 2          # empty at start, filled by GCMC
+
+minimize  1.0e-6  1.0e-8  1000  10000
+reset_timestep 0
+
+# --- FREEZE THE SLAB ---------------------------------------------------------
+# Zero all forces on slab atoms and set their velocities to zero.
+# They define the surface potential landscape but do not move.
+# This is the correct approach for modeling a rigid substrate.
+
+velocity  solid  set  0.0 0.0 0.0
+fix  freeze_slab  solid  setforce  0.0 0.0 0.0
+
+# --- GCMC REGION AND FIX -----------------------------------------------------
+# Restrict insertions to the vacuum above the slab.
+# Start 1.5 sigma above slab top to avoid inserting into the solid.
+
+#variable  z_gcmc_lo  equal  ${z_slab}+1.5   # = 6.26
+#variable  z_gcmc_hi  equal  ${Lz}-1.0       # = 39.0
+
+#region  vacuum  block  0 ${Lxy}  0 ${Lxy}  ${z_gcmc_lo} ${z_gcmc_hi}  units box
+
+fix  mygcmc  gas  gcmc  1  500  500  2  54321  ${TEMP}  ${MU}  0.5  region  vacuum
+
+# --- DYNAMIC DOF -------------------------------------------------------------
+# N_gas fluctuates, so degrees of freedom must be recomputed dynamically.
+
+compute_modify  thermo_temp  dynamic/dof  yes
+
+# --- DENSITY PROFILE ALONG Z -------------------------------------------------
+# Main result: density of gas atoms as a function of z.
+# The adsorption layer appears as a sharp peak just above z_slab (~z=5-7).
+# Bulk-gas-like behavior further away means near-zero density.
+
+compute  zchunk  gas  chunk/atom  bin/1d  z  lower  0.5  &
+         units box  nchunk every
+
+fix  zprofile  gas  ave/chunk  10  200  2000  zchunk  density/number  &
+     ave  running  file  density_profile_mu${MU}.dat
+
+# --- OUTPUT ------------------------------------------------------------------
+
+variable  n_gas  equal  count(gas)
+variable  nugget equal  1.0e-8
+variable  iacc   equal  f_mygcmc[4]/(f_mygcmc[3]+${nugget})
+variable  dacc   equal  f_mygcmc[6]/(f_mygcmc[5]+${nugget})
+variable  tacc   equal  f_mygcmc[2]/(f_mygcmc[1]+${nugget})
+
+thermo_style  custom  step  atoms  v_n_gas  temp  press  v_iacc  v_dacc  v_tacc
+thermo  10
+
+
+# --- RUN ---------------------------------------------------------------------
+
+print "================================================"
+print "Equilibration: T=${TEMP}, mu=${MU}"
+print "Watch n_gas stabilize - adsorption layer forming"
+print "================================================"
+
+dump  eq  all  atom  1  dump_adsorption_mu${MU}.lammpstrj
+run  500
+undump eq
+run 2000
+
+print "================================================"
+print "Production: collecting density profile"
+print "================================================"
+
+dump  run  all  atom  100  dump_adsorption_mu${MU}.lammpstrj
+dump_modify run append yes
+run  10000
+
+print "================================================"
+print "RESULTS:"
+print "  T       = ${TEMP}"
+print "  mu      = ${MU}"
+print "  N_gas   = $(v_n_gas)"
+print "  Profile -> density_profile_mu${MU}.dat"
+print "  Traj    -> dump_adsorption_mu${MU}.lammpstrj"
+print "================================================"
