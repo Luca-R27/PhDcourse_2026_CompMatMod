@@ -11,8 +11,8 @@
 
 # key variables
 variable  mu    equal  -2.0	# chemical potential
-variable  T  equal   1.0	# temperature
-variable  eps12 equal 0.5	# interaction between 1 and 2
+variable  T  equal   0.5	# temperature
+variable  eps12 equal 2.0	# interaction between 1 and 2
 
 # --- initialisation --------------------------------------------
 
@@ -61,7 +61,7 @@ reset_timestep 0
 
 # freeze the slab: zero all forces on slab atoms and set their velocities to zero.
 # They define the surface potential landscape but do not move. 
-# This allows us to change temperature without worrying for it to melt.
+# This allows us to change temperature without worrying for the slab to melt.
 velocity  solid  set  0.0 0.0 0.0
 fix  freeze_slab  solid  setforce  0.0 0.0 0.0
 
@@ -89,22 +89,29 @@ thermo  10
 
 
 # ---  run  -------------------------------------------------------
+variable 	Neq equal 2500
+variable 	Nrun equal 5000
 
-# first run a 2500 steps of initialisation (only dump for 500)
+# first run a Neq steps of initialisation
 # export dump files and dat files
-dump  eq  all  atom  1  adsorption_mu_${mu}_T_${T}_eps12_${eps12}.dump
+dump  eq  all  atom  10  adsorption_mu_${mu}_T_${T}_eps12_${eps12}.dump
 fix  print_thermo  all  print  1  "$(atoms) $(v_n_gas) $(v_iacc) $(v_dacc) $(v_tacc)" file adsorption_mu_${mu}_T_${T}_eps12_${eps12}_equil.dat screen  no title "# atoms n_gas iacc dacc tacc"
-run  500
+run  ${Neq}
 undump eq
-fix  print_thermo  all  print  1  "$(atoms) $(v_n_gas) $(v_iacc) $(v_dacc) $(v_tacc)" append adsorption_mu_${mu}_T_${T}_eps12_${eps12}_equil.dat  screen  no title "# atoms n_gas iacc dacc tacc"
-run 2000
 
 # and now the main run where we collect the data
-# Compute a density of gas atoms as a function of z.
-compute  zchunk  gas  chunk/atom  bin/1d  z  lower  0.5 units box nchunk every
-fix  zprofile  gas  ave/chunk  10  100  1000  zchunk  density/number ave running file density_profile_mu_${mu}_T_${T}_eps12_${eps12}.dat
+
+# Compute a density of gas atoms as a function of z with the following 2 commands:
+# see docs for compute chunk/atom command. We define bins in z to count atoms inside a slab. We consider only atoms in group "gas".
+compute  zchunk  gas  chunk/atom  bin/1d  z  lower  0.1 units lattice nchunk once
+# while this averages the atom count in each bin over time. We average at timestep Neq+Nrun (the final one) using a profile every 10 steps for the Nrun steps. So Nrun/10 profiles. See fix ave/chunk command
+fix  zprofile  gas  ave/chunk  10 $(v_Nrun/10) $(v_Neq+v_Nrun)  zchunk  density/number ave running file density_profile_mu_${mu}_T_${T}_eps12_${eps12}.dat
+
+# dump atomic structure for visualisation and print to file the number of gas atoms and the rates from fix gcmc
 dump  run  all  atom  100  adsorption_mu_${mu}_T_${T}_eps12_${eps12}.dump
 dump_modify run append yes
 fix  print_thermo  all  print  1  "$(atoms) $(v_n_gas) $(v_iacc) $(v_dacc) $(v_tacc)"  file adsorption_mu_${mu}_T_${T}_eps12_${eps12}_run.dat  screen  no title "# atoms n_gas iacc dacc tacc"
-run  5000
+
+# run
+run  ${Nrun}
 
