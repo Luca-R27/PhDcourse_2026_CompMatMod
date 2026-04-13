@@ -1,0 +1,41 @@
+# -----------------  Frozen argon: NVT run at low temperature  ------------------ #
+# Run at constant temperature and record thermodynamic quantities.
+
+variable	T equal 35		# target temperature
+log		Ar_nvt_$TK.log
+units           metal 		      	# (eV, Angstrom, ps)
+atom_style      atomic
+boundary        p p p			# 3D periodic boundary conditions
+
+# -----------------  Create the lattice  ------------------ #
+lattice         fcc 5		# initialise to this, then adjusted via minimisation
+region          box block 0 5 0 5 0 5
+create_box      1 box
+create_atoms    1 box
+
+# -----------------  Force field: Lennard-Jones  ------------------ #
+mass            1 39.948                        # Ar atomic mass (g/mol)
+pair_style      lj/cut 10.0                     # cutoff about 3 sigma
+pair_coeff      1 1 0.01032 3.405               # epsilon (eV), sigma (A)
+
+# -----------------  Initial minimisation to zero pressure ------------------ #
+fix             1 all box/relax x 0.0 y 0.0 z 0.0 couple none
+minimize        1e-14 1.0e-14 50000 100000
+unfix           1
+reset_timestep  0
+
+# -----------------  NVT thermostat ------------------ #
+velocity        all create $T 12345 dist gaussian mom yes  # initialise to target T
+fix             1 all nvt temp $T $T $(100.0*dt)  # LAMMPS's general recommendation
+thermo_style    custom step temp pe ke etotal press vol	    # print thermodynamic info
+thermo          100
+
+# -----------------  Run ------------------ #
+# Equilibration phase: expect sharp drop in T which then rises again
+fix 		extra all print 100 "$(time)	$(pe)	$(ke)	$(etotal)	$(vol)	$(press)	$(temp)" file Ar_nvt_$TK.dat  screen no title "# time	pe	ke	etotal	vol	press	temp"
+run             100000
+# Production phase
+fix 		extra all print 100 "$(time)	$(pe)	$(ke)	$(etotal)	$(vol)	$(press)	$(temp)" append Ar_nvt_$TK.dat  screen no title "# time   pe      ke      etotal  vol     press   temp"
+run             1000000              # default 1 fs timestep, so 1 ns simulated
+
+write_data	Ar_nvt_$TK_final.data
