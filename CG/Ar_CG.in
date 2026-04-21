@@ -1,0 +1,101 @@
+# -----------------  Frozen argon  ------------------ #
+
+variable	sigma equal $(3.405*3)
+variable	epsilon equal $(0.01032*27)
+variable 	strext equal 1000.0
+
+log             Ar.log
+units           metal                   # (eV, Angstrom, ps)
+atom_style      atomic
+boundary        p p p                   # 3D periodic boundary conditions
+
+# -----------------  Create the lattice  ------------------ #
+variable	n equal 4
+lattice         fcc $(v_sigma*1.6)           # initialise to this, then adjusted via minimisation
+region          box prism 0 $n 0 $n 0 $n 0.0 0.0 0.0
+create_box      1 box
+create_atoms    1 box
+
+# -----------------  Force field: Lennard-Jones  ------------------ #
+#pair_style      lj/cut $(2.5*v_sigma)                     # cutoff 
+#pair_coeff      1 1 ${epsilon} ${sigma}         # epsilon (eV), sigma (A)
+pair_style 	table linear 4000
+pair_coeff 	* * ./shifted_LJ_3n.txt LJ_3n $(2.5*v_sigma)
+
+mass            1 39.948                        # Ar atomic mass (g/mol)
+
+
+thermo_style    custom step pe lx ly lz xy xz yz pxx pyy pzz pxy pxz pyz    # print thermodynamic info
+compute         peat all pe/atom
+
+displace_atoms	all random $(v_sigma/1000) $(v_sigma/1000) $(v_sigma/1000)  42
+dump myDump all custom 10 dump.lammpstrj id type x y z c_peat
+
+fix rel 	all box/relax x 0.0 y 0.0 z 0.0 couple none vmax 0.0005
+minimize        1e-15 0.0 10000 100000
+unfix rel
+undump		myDump
+
+fix             3 all npt temp 0.1 0.1 $(100*dt) iso 0.0 0.0 $(1e6*dt)
+run             4000
+unfix           3
+
+fix rel         all box/relax x 0.0 y 0.0 z 0.0 couple none vmax 0.0005
+minimize        1e-12 0.0 10000 100000
+unfix rel
+
+print $(lx/v_n/sqrt(2))
+print $(v_sigma*2^(1/6))
+print $(-v_epsilon)
+print $(pe/6/v_n^3/4)
+
+write_dump       all custom minimised.dump id type x y z vx vy vz c_peat
+
+# get unstrained dimensions for the later definition of strain
+variable tmp equal lx
+variable Lx0 equal $(v_tmp)
+variable tmp delete 
+variable tmp equal lz
+variable Lz0 equal $(v_tmp)
+variable tmp delete 
+
+# subsequently relax under shearing and axial stresses
+fix rel 	all box/relax x 0.0 y 0.0 z 0.0 xy 0.0 yz 0.0 xz $(v_strext)
+minimize        1e-12 1e-12 10000 100000
+unfix rel
+
+variable tmp equal xz
+variable Xzf equal $(v_tmp)  # shear deformation
+variable tmp delete
+
+# get stear strain
+variable exz equal $(v_Xzf/v_Lz0)
+
+# back to unstressed
+fix rel 	all box/relax x 0.0 y 0.0 z 0.0 xy 0.0 yz 0.0 xz 0.0
+minimize        1e-12 1e-12 10000 100000
+unfix rel
+
+
+fix rel 	all box/relax x 0.0 y 0.0 z $(v_strext) xy 0.0 yz 0.0 xz 0.0
+minimize        1e-12 1e-12 10000 100000
+unfix rel
+
+# uniaxial deformation, axial and transverse
+variable tmp equal lx
+variable Lxf equal $(v_tmp)
+variable tmp delete 
+variable tmp equal lz
+variable Lzf equal $(v_tmp)
+variable tmp delete 
+
+variable exx equal $((v_Lxf-v_Lx0)/v_Lxf) 
+variable ezz equal $((v_Lzf-v_Lz0)/v_Lzf) 
+
+# get elastic constants
+variable c11 equal $((v_exx+v_ezz)*v_strext/(v_ezz*(v_exx+v_ezz)-2.0*v_exx*v_exx)/(-10000.0)) 
+variable c12 equal $(v_exx*v_strext/(-v_ezz*(v_exx+v_ezz)+2.0*v_exx*v_exx)/(-10000.0)) 
+variable c44 equal $(v_strext/v_exz/(-10000.0)) 
+
+
+print "$(v_c11:%.3f)		$(v_c12:%.3f)		$(v_c44:%.3f)	$(v_strext/(-10):%.3f)" append output.dat
