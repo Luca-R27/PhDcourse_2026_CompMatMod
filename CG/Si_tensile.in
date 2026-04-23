@@ -1,0 +1,65 @@
+# Run a uniaxial tensile test of a silicon sheet with a crack
+
+# --------  Setup  ----------- #
+
+variable        a equal $(5.431) # lattice parameter
+variable        nx equal 40    # number of cells
+variable        ny equal 2    # number of cells
+variable        nz equal 20    # number of cells
+variable	m equal 28.0855  # silicon mass
+variable 	strext equal -1000.0  # external stress
+variable 	etol equal 1.0e-10
+
+units           metal
+atom_style      atomic
+boundary        p p p    
+
+# --------  Geometry  ----------- #
+
+lattice 	diamond $a
+region          box prism 0 ${nx} 0 ${ny} 0 ${nz} 0.0 0.0 0.0 units lattice # allow for triclinic geometry
+create_box      1 box
+create_atoms 	1 region box
+
+region          crack block $(v_nx/2-2) $(v_nx/2+2) INF INF $(v_nz/2-0.1) $(v_nz/2+0.1) units lattice
+delete_atoms	region crack
+
+mass            1 $m   # Si atomic mass in metal units
+
+# --------  Potential and output  ----------- #
+pair_style 	sw
+pair_coeff      * * Si.sw Si
+thermo          100
+thermo_style    custom step lx ly lz vol pxx pyy pzz pxy pxz pyz temp pe etotal
+compute         peat all pe/atom
+compute         strat all stress/atom NULL
+
+# --------  Simulation  ----------- #
+# Minimization (relax high forces)
+minimize        1.0e-12 1.0e-12 10000 100000
+fix rel 	all box/relax x 0.0 y 0.0 z 0.0
+minimize        1e-12 1e-12 10000 100000
+unfix rel
+variable l0 equal $(v_nz*v_a)
+print "$((lz-v_l0)/v_l0:%.4f)         $(pzz/(-10):%.2f)		$(pe:%.2f)" file Si_tensile.dat
+write_dump    all custom Si_tensile.dump id type x y z c_peat c_strat[1] c_strat[2] c_strat[3] c_strat[4] c_strat[5] c_strat[6]
+
+change_box all z scale 1.05 remap #x volume y volume remap
+minimize 1.0e-8 1.0e-8 10000 100000
+print "$((lz-v_l0)/v_l0:%.4f)         $(pzz/(-10):%.2f)		$(pe:%.2f)" append Si_tensile.dat
+write_dump    all custom Si_tensile.dump id type x y z c_peat c_strat[1] c_strat[2] c_strat[3] c_strat[4] c_strat[5] c_strat[6] modify append yes
+
+
+reset_timestep	0
+
+
+variable i loop 100
+label loop
+  change_box all z scale 1.001 remap
+  minimize ${etol} 0.0 10000 100000
+  print "$((lz-v_l0)/v_l0:%.6f)		$(pzz/(-10):%.2f)		$(pe:%.2f)" append Si_tensile.dat
+  write_dump    all custom Si_tensile.dump id type x y z c_peat c_strat[1] c_strat[2] c_strat[3] c_strat[4] c_strat[5] c_strat[6] modify append yes
+  #if "$((v_i - 10*floor(v_i/10)) == 0)" then "write_dump    all custom Si_tensile.dump id type x y z c_peat c_strat[1] c_strat[2] c_strat[3] c_strat[4] c_strat[5] c_strat[6] modify append yes"
+  next i
+jump SELF loop
+
